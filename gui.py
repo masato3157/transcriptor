@@ -1,5 +1,7 @@
 """Tkinter GUI for the mp4 transcription tool."""
 import os
+import platform
+import subprocess
 import threading
 from pathlib import Path
 from tkinter import (
@@ -20,6 +22,17 @@ load_dotenv()
 MODEL_SIZES = ["tiny", "base", "small", "medium", "large-v3"]
 LANGUAGE_OPTIONS = {"日本語": "ja", "自動検出": None}
 DEVICE_OPTIONS = {"自動": "auto", "CPU": "cpu", "GPU": "cuda"}
+
+
+def _open_folder(folder_path):
+    """Open the given folder in the OS's file explorer, cross-platform."""
+    system = platform.system()
+    if system == "Windows":
+        os.startfile(folder_path)
+    elif system == "Darwin":
+        subprocess.run(["open", folder_path])
+    else:
+        subprocess.run(["xdg-open", folder_path])
 
 
 class TranscriptionApp(Tk):
@@ -225,6 +238,8 @@ class TranscriptionApp(Tk):
                 Entry(names_frame, textvariable=var).grid(row=i, column=1, sticky="w")
                 name_vars[label] = var
 
+        open_folder_button = {"widget": None}
+
         def on_export():
             speaker_names = {label: var.get() for label, var in name_vars.items()}
             base_path = str(Path(video_path).with_suffix(""))
@@ -237,6 +252,15 @@ class TranscriptionApp(Tk):
             )
             self.log(f"[{video_path}] 出力完了: {', '.join(written)}")
             messagebox.showinfo("完了", "エクスポートが完了しました:\n" + "\n".join(written))
+
+            output_folder = str(Path(video_path).parent)
+            if open_folder_button["widget"] is None:
+                open_folder_button["widget"] = Button(
+                    window,
+                    text="出力先フォルダを開く",
+                    command=lambda: _open_folder(output_folder),
+                )
+                open_folder_button["widget"].pack(pady=5)
 
         Button(window, text="名前を反映してエクスポート", command=on_export).pack(pady=5)
 

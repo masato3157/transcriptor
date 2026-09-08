@@ -14,7 +14,7 @@ def test_diarize_returns_speaker_segments():
     fake_pipeline = MagicMock()
     fake_pipeline.return_value = fake_diarization
 
-    with patch("diarizer.Pipeline.from_pretrained", return_value=fake_pipeline) as mock_from_pretrained:
+    with patch("pyannote.audio.Pipeline.from_pretrained", return_value=fake_pipeline) as mock_from_pretrained:
         result = diarize("audio.wav", hf_token="fake-token", device="cpu")
 
     mock_from_pretrained.assert_called_once_with(

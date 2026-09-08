@@ -100,7 +100,7 @@ def export(segments, speaker_names, output_formats, include_timestamps, output_b
     base = Path(output_base_path)
     for fmt in output_formats:
         content = _BUILDERS[fmt](segments, speaker_names, include_timestamps)
-        out_path = base.with_suffix(f".{fmt}")
+        out_path = base.with_name(base.name + f".{fmt}")
         out_path.write_text(content, encoding="utf-8")
         written.append(str(out_path))
     return written

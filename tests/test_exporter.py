@@ -104,3 +104,18 @@ def test_export_only_writes_selected_formats(tmp_path):
 
     assert written == [str(base_path.with_suffix(".txt"))]
     assert not base_path.with_suffix(".srt").exists()
+
+
+def test_export_handles_dotted_base_filename(tmp_path):
+    base_path = tmp_path / "2026.09.08 meeting"
+    written = export(
+        SEGMENTS_WITH_SPEAKERS, SPEAKER_NAMES, ["txt", "srt", "vtt"], True, str(base_path)
+    )
+
+    assert written == [
+        str(tmp_path / "2026.09.08 meeting.txt"),
+        str(tmp_path / "2026.09.08 meeting.srt"),
+        str(tmp_path / "2026.09.08 meeting.vtt"),
+    ]
+    for path in written:
+        assert Path(path).exists()
