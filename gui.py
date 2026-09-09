@@ -101,7 +101,14 @@ class TranscriptionApp(Tk):
         self.log_text.pack(fill="both", expand=True, padx=10, pady=5)
 
     def _select_files(self):
-        paths = filedialog.askopenfilenames(filetypes=[("MP4 動画", "*.mp4")])
+        paths = filedialog.askopenfilenames(
+            filetypes=[
+                ("対応ファイル", "*.mp4 *.wav *.mp3"),
+                ("MP4 動画", "*.mp4"),
+                ("WAV 音声", "*.wav"),
+                ("MP3 音声", "*.mp3"),
+            ]
+        )
         if not paths:
             return
         self.selected_files = list(paths)
