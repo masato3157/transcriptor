@@ -22,7 +22,17 @@ ffmpeg -version
 pip install -r requirements.txt
 ```
 
-torch や pyannote.audio のダウンロードには数分かかる場合があります。NVIDIA GPUがある場合は、CUDA対応版のtorchを別途インストールするとGPUで高速に処理できます([PyTorch公式](https://pytorch.org/get-started/locally/)を参照)。
+torch や pyannote.audio のダウンロードには数分かかる場合があります。
+
+#### GPU(NVIDIA)で高速化したい場合
+
+`requirements.txt` の torch は既定でCPU専用版がインストールされます。NVIDIA GPUがある場合は、インストール後に以下を実行してCUDA対応版に入れ替えると高速化できます([PyTorch公式](https://pytorch.org/get-started/locally/)も参照):
+
+```bash
+pip install torch --index-url https://download.pytorch.org/whl/cu128
+```
+
+GPUのVRAMが少ない(空き2GB未満など)環境では、`large-v3`のような大きいモデルがGPUに載らないことがあります。その場合ツールが自動的にCPU実行にフォールバックしますが、体感速度を優先したい場合はモデルサイズを`medium`や`small`に下げることをおすすめします。
 
 ### 3. Hugging Faceトークンの取得(話者分離を使う場合)
 

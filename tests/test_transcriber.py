@@ -47,14 +47,50 @@ def test_transcribe_on_cpu_caps_cpu_threads_to_avoid_mkl_allocation_failure():
     assert kwargs["cpu_threads"] == 4
 
 
-def test_transcribe_on_cuda_does_not_pass_cpu_threads():
+def test_transcribe_on_cuda_uses_int8_float16_and_no_cpu_threads():
+    # int8_float16 uses less VRAM than plain float16, which matters on GPUs
+    # with limited free memory (e.g. a 6GB card mostly used by other apps).
     fake_model_instance = MagicMock()
     fake_model_instance.transcribe.return_value = ([], MagicMock())
 
     with patch("transcriber.WhisperModel", return_value=fake_model_instance) as mock_cls:
         transcribe("audio.wav", model_size="small", language="ja", device="cuda")
 
-    mock_cls.assert_called_once_with("small", device="cuda", compute_type="float16")
+    mock_cls.assert_called_once_with("small", device="cuda", compute_type="int8_float16")
+
+
+def test_transcribe_falls_back_to_cpu_when_cuda_loading_fails():
+    # Regression coverage for GPUs with too little free VRAM: WhisperModel()
+    # raises when it can't load on CUDA (e.g. out-of-memory). transcribe()
+    # should retry on CPU instead of propagating the error.
+    fake_model_instance = MagicMock()
+    fake_model_instance.transcribe.return_value = ([], MagicMock())
+
+    with patch(
+        "transcriber.WhisperModel",
+        side_effect=[RuntimeError("CUDA failed with error out of memory"), fake_model_instance],
+    ) as mock_cls:
+        result = transcribe("audio.wav", model_size="large-v3", language="ja", device="cuda")
+
+    assert result == []
+    assert mock_cls.call_count == 2
+    first_call, second_call = mock_cls.call_args_list
+    assert first_call == (("large-v3",), {"device": "cuda", "compute_type": "int8_float16"})
+    assert second_call == (
+        ("large-v3",),
+        {"device": "cpu", "compute_type": "int8", "cpu_threads": 4},
+    )
+    fake_model_instance.transcribe.assert_called_once_with("audio.wav", language="ja")
+
+
+def test_transcribe_propagates_error_when_cpu_fallback_also_fails():
+    with patch("transcriber.WhisperModel", side_effect=RuntimeError("still broken")):
+        try:
+            transcribe("audio.wav", model_size="large-v3", language="ja", device="cuda")
+        except RuntimeError as exc:
+            assert "still broken" in str(exc)
+        else:
+            raise AssertionError("expected RuntimeError to propagate")
 
 
 def test_resolve_device_auto_falls_back_to_cpu_without_cuda():

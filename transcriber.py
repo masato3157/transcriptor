@@ -9,6 +9,25 @@ def _resolve_device(device: str) -> str:
     return "cuda" if torch.cuda.is_available() else "cpu"
 
 
+def _load_cpu_model(model_size: str) -> WhisperModel:
+    # faster-whisper defaults cpu_threads to the number of logical cores.
+    # For large models (e.g. large-v3), that can make CTranslate2's MKL
+    # allocator fail with "mkl_malloc: failed to allocate memory" even
+    # with plenty of free RAM. Capping the thread count avoids this.
+    return WhisperModel(model_size, device="cpu", compute_type="int8", cpu_threads=4)
+
+
+def _load_model(model_size: str, resolved_device: str) -> WhisperModel:
+    if resolved_device != "cuda":
+        return _load_cpu_model(model_size)
+    try:
+        # int8_float16 uses less VRAM than plain float16, which matters on
+        # GPUs with little free memory left after other apps.
+        return WhisperModel(model_size, device="cuda", compute_type="int8_float16")
+    except Exception:
+        return _load_cpu_model(model_size)
+
+
 def transcribe(wav_path: str, model_size: str = "large-v3", language: str | None = "ja", device: str = "auto"):
     """Transcribe a WAV file into timestamped segments.
 
@@ -22,17 +41,7 @@ def transcribe(wav_path: str, model_size: str = "large-v3", language: str | None
         list of {"start": float, "end": float, "text": str}
     """
     resolved_device = _resolve_device(device)
-    compute_type = "float16" if resolved_device == "cuda" else "int8"
-    if resolved_device == "cpu":
-        # faster-whisper defaults cpu_threads to the number of logical cores.
-        # For large models (e.g. large-v3), that can make CTranslate2's MKL
-        # allocator fail with "mkl_malloc: failed to allocate memory" even
-        # with plenty of free RAM. Capping the thread count avoids this.
-        model = WhisperModel(
-            model_size, device=resolved_device, compute_type=compute_type, cpu_threads=4
-        )
-    else:
-        model = WhisperModel(model_size, device=resolved_device, compute_type=compute_type)
+    model = _load_model(model_size, resolved_device)
     segments, _info = model.transcribe(wav_path, language=language)
     return [
         {"start": seg.start, "end": seg.end, "text": seg.text.strip()}
