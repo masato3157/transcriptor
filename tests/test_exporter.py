@@ -73,6 +73,34 @@ def test_build_srt_format():
     )
 
 
+def test_build_srt_wraps_long_lines_at_25_characters():
+    long_text = "あ" * 30  # 30 chars, no speaker -> full line is just the text
+    segments = [{"start": 0.0, "end": 2.0, "speaker": None, "text": long_text}]
+
+    result = build_srt(segments, {})
+
+    expected_cue_text = ("あ" * 25) + "\n" + ("あ" * 5)
+    assert result == f"1\n00:00:00,000 --> 00:00:02,000\n{expected_cue_text}\n"
+
+
+def test_build_srt_wrap_counts_speaker_prefix_toward_25_chars():
+    # prefix "田中: " is 4 chars, so only 21 chars of body fit on the first line
+    body = "あ" * 25
+    segments = [{"start": 0.0, "end": 2.0, "speaker": "SPEAKER_00", "text": body}]
+
+    result = build_srt(segments, {"SPEAKER_00": "田中"})
+
+    line1 = "田中: " + "あ" * 21
+    line2 = "あ" * 4
+    assert result == f"1\n00:00:00,000 --> 00:00:02,000\n{line1}\n{line2}\n"
+
+
+def test_build_srt_does_not_wrap_short_lines():
+    segments = [{"start": 0.0, "end": 2.0, "speaker": None, "text": "短い文"}]
+    result = build_srt(segments, {})
+    assert result == "1\n00:00:00,000 --> 00:00:02,000\n短い文\n"
+
+
 def test_build_vtt_format():
     result = build_vtt(SEGMENTS_WITH_SPEAKERS, SPEAKER_NAMES)
     assert result == (

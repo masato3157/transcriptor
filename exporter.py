@@ -36,6 +36,16 @@ def _speaker_prefix(segment, speaker_names):
     return f"{name}: "
 
 
+SRT_LINE_WIDTH = 25
+
+
+def _wrap_srt_text(text, width=SRT_LINE_WIDTH):
+    """Split text into lines of at most `width` characters each."""
+    if not text:
+        return [""]
+    return [text[i : i + width] for i in range(0, len(text), width)]
+
+
 def build_txt(segments, speaker_names, include_timestamps):
     """Build TXT content from merged segments."""
     lines = []
@@ -56,7 +66,8 @@ def build_srt(segments, speaker_names):
         prefix = _speaker_prefix(seg, speaker_names)
         start_ts = format_timestamp_srt(seg["start"])
         end_ts = format_timestamp_srt(seg["end"])
-        blocks.append(f"{i}\n{start_ts} --> {end_ts}\n{prefix}{seg['text']}\n")
+        cue_text = "\n".join(_wrap_srt_text(f"{prefix}{seg['text']}"))
+        blocks.append(f"{i}\n{start_ts} --> {end_ts}\n{cue_text}\n")
     return "\n".join(blocks)
 
 
