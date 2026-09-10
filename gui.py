@@ -24,6 +24,19 @@ LANGUAGE_OPTIONS = {"日本語": "ja", "自動検出": None}
 DEVICE_OPTIONS = {"自動": "auto", "CPU": "cpu", "GPU": "cuda"}
 
 
+def _resolve_output_base_path(video_path, output_folder):
+    """Return the path (without extension) exporter.export should write to.
+
+    If output_folder is empty, files are written next to video_path (the
+    original behavior). Otherwise, they're written into output_folder using
+    video_path's base filename.
+    """
+    stem = Path(video_path).stem
+    if output_folder:
+        return str(Path(output_folder) / stem)
+    return str(Path(video_path).with_suffix(""))
+
+
 def _open_folder(folder_path):
     """Open the given folder in the OS's file explorer, cross-platform."""
     system = platform.system()
@@ -52,6 +65,18 @@ class TranscriptionApp(Tk):
 
         self.file_listbox = Listbox(self, height=5)
         self.file_listbox.pack(fill="x", padx=10, pady=5)
+
+        output_folder_frame = Frame(self)
+        output_folder_frame.pack(fill="x", padx=10, pady=5)
+        Label(output_folder_frame, text="保存先フォルダ:").pack(side="left")
+        self.output_folder_var = StringVar(value="")
+        Entry(output_folder_frame, textvariable=self.output_folder_var, state="readonly").pack(
+            side="left", fill="x", expand=True, padx=5
+        )
+        Button(output_folder_frame, text="参照", command=self._select_output_folder).pack(side="left")
+        Label(
+            output_folder_frame, text="(未指定なら入力ファイルと同じフォルダ)", fg="gray"
+        ).pack(side="left", padx=5)
 
         settings_frame = Frame(self)
         settings_frame.pack(fill="x", padx=10, pady=5)
@@ -116,6 +141,11 @@ class TranscriptionApp(Tk):
         for p in self.selected_files:
             self.file_listbox.insert(END, p)
 
+    def _select_output_folder(self):
+        folder = filedialog.askdirectory()
+        if folder:
+            self.output_folder_var.set(folder)
+
     def log(self, message):
         def _append():
             self.log_text.configure(state=NORMAL)
@@ -159,6 +189,7 @@ class TranscriptionApp(Tk):
             "hf_token": hf_token,
             "output_formats": output_formats,
             "include_timestamps": self.include_timestamps_var.get(),
+            "output_folder": self.output_folder_var.get(),
         }
 
         self.run_button.configure(state=DISABLED)
@@ -206,7 +237,14 @@ class TranscriptionApp(Tk):
             os.remove(wav_path)
 
         merged = merger.merge_segments(transcript_segments, speaker_segments)
-        self.after(0, lambda: self._show_results_window(video_path, merged, settings))
+
+        base_path = _resolve_output_base_path(video_path, settings["output_folder"])
+        written = exporter.export(
+            merged, {}, settings["output_formats"], settings["include_timestamps"], base_path
+        )
+        self.log(f"[{video_path}] 自動保存しました: {', '.join(written)}")
+
+        self.after(0, lambda: self._show_results_window(video_path, merged, settings, base_path))
 
     def _confirm_on_main_thread(self, message):
         result = {}
@@ -220,10 +258,21 @@ class TranscriptionApp(Tk):
         event.wait()
         return result.get("value", False)
 
-    def _show_results_window(self, video_path, merged_segments, settings):
+    def _show_results_window(self, video_path, merged_segments, settings, base_path):
         window = Toplevel(self)
         window.title(f"結果: {Path(video_path).name}")
         window.geometry("600x550")
+
+        Label(
+            window,
+            text=(
+                "話者ラベル(SPEAKER_00等)のまま既に自動保存済みです。"
+                "実名を入力して「名前を反映してエクスポート」を押すと、同じファイルに上書き保存されます。"
+                "このウィンドウを閉じても保存済みの内容は失われません。"
+            ),
+            wraplength=560,
+            justify="left",
+        ).pack(fill="x", padx=10, pady=5)
 
         text_widget = Text(window, height=15)
         text_widget.pack(fill="both", expand=True, padx=10, pady=5)
@@ -249,7 +298,6 @@ class TranscriptionApp(Tk):
 
         def on_export():
             speaker_names = {label: var.get() for label, var in name_vars.items()}
-            base_path = str(Path(video_path).with_suffix(""))
             written = exporter.export(
                 merged_segments,
                 speaker_names,
@@ -257,10 +305,10 @@ class TranscriptionApp(Tk):
                 settings["include_timestamps"],
                 base_path,
             )
-            self.log(f"[{video_path}] 出力完了: {', '.join(written)}")
+            self.log(f"[{video_path}] 実名を反映して上書き保存しました: {', '.join(written)}")
             messagebox.showinfo("完了", "エクスポートが完了しました:\n" + "\n".join(written))
 
-            output_folder = str(Path(video_path).parent)
+            output_folder = str(Path(base_path).parent)
             if open_folder_button["widget"] is None:
                 open_folder_button["widget"] = Button(
                     window,
