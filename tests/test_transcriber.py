@@ -27,7 +27,9 @@ def test_transcribe_returns_segments_as_dicts():
         {"start": 1.5, "end": 3.0, "text": "さようなら"},
     ]
     mock_cls.assert_called_once_with("small", device="cpu", compute_type="int8", cpu_threads=4)
-    fake_model_instance.transcribe.assert_called_once_with("audio.wav", language="ja")
+    fake_model_instance.transcribe.assert_called_once_with(
+        "audio.wav", language="ja", vad_filter=True, condition_on_previous_text=False
+    )
 
 
 def test_transcribe_on_cpu_caps_cpu_threads_to_avoid_mkl_allocation_failure():
@@ -80,7 +82,9 @@ def test_transcribe_falls_back_to_cpu_when_cuda_loading_fails():
         ("large-v3",),
         {"device": "cpu", "compute_type": "int8", "cpu_threads": 4},
     )
-    fake_model_instance.transcribe.assert_called_once_with("audio.wav", language="ja")
+    fake_model_instance.transcribe.assert_called_once_with(
+        "audio.wav", language="ja", vad_filter=True, condition_on_previous_text=False
+    )
 
 
 def test_transcribe_propagates_error_when_cpu_fallback_also_fails():

@@ -42,7 +42,9 @@ def transcribe(wav_path: str, model_size: str = "large-v3", language: str | None
     """
     resolved_device = _resolve_device(device)
     model = _load_model(model_size, resolved_device)
-    segments, _info = model.transcribe(wav_path, language=language)
+    segments, _info = model.transcribe(
+        wav_path, language=language, vad_filter=True, condition_on_previous_text=False
+    )
     return [
         {"start": seg.start, "end": seg.end, "text": seg.text.strip()}
         for seg in segments
