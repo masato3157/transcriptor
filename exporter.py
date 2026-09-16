@@ -41,7 +41,7 @@ def _speaker_prefix(segment, speaker_names):
 
 
 SRT_LINE_WIDTH = 25
-SRT_MIN_BREAK_LENGTH = 8
+SRT_MIN_BREAK_LENGTH = 20
 
 
 def _wrap_srt_text(text, width=SRT_LINE_WIDTH, min_break_length=SRT_MIN_BREAK_LENGTH):
@@ -76,7 +76,29 @@ def _wrap_srt_text(text, width=SRT_LINE_WIDTH, min_break_length=SRT_MIN_BREAK_LE
 
     if current:
         lines.append(current)
-    return lines or [""]
+    return _pull_leading_punctuation_to_previous_line(lines) or [""]
+
+
+_SRT_PUNCTUATION = "。、！？"
+
+
+def _pull_leading_punctuation_to_previous_line(lines):
+    """Move a line's leading punctuation mark(s) to the end of the previous
+    line, so no line ever starts with punctuation (e.g. avoids a line like
+    "、目覚めてすぐ" left over from a break right after a particle that was
+    immediately followed by a "、" in the source text).
+    """
+    result = list(lines)
+    i = 1
+    while i < len(result):
+        if result[i] and result[i][0] in _SRT_PUNCTUATION:
+            result[i - 1] += result[i][0]
+            result[i] = result[i][1:]
+            if result[i] == "":
+                del result[i]
+        else:
+            i += 1
+    return result
 
 
 def _split_segment_into_srt_cues(prefix, text, start, end):

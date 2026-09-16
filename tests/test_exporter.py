@@ -110,20 +110,37 @@ def test_build_srt_never_splits_a_single_token_mid_word():
 
 
 def test_build_srt_prefers_breaking_after_a_particle_before_reaching_the_width_limit():
-    # Real hallucination-free example: breaking at a particle (助詞) once the
-    # line has reached a minimum length reads more naturally than packing
+    # Breaking at a particle (助詞) once the line has reached
+    # SRT_MIN_BREAK_LENGTH (20) characters reads more naturally than packing
     # all the way to the 25-character limit.
-    text = "ですが規則でこれ以上のことは申し上げられないんです。"
-    segments = [{"start": 0.0, "end": 14.06, "speaker": None, "text": text}]
+    text = "ですから、夢を記録する時は、目覚めてすぐ、起き上がる前にメモすることが大切です。"
+    segments = [{"start": 0.0, "end": 8.32, "speaker": None, "text": text}]
 
     result = build_srt(segments, {})
 
-    line1 = "ですが規則でこれ以上の"
-    line2 = "ことは申し上げられないんです。"
+    line1 = "ですから、夢を記録する時は、目覚めてすぐ、"
+    line2 = "起き上がる前にメモすることが大切です。"
+    assert len(line1) < 25  # confirms this is a particle break, not a width overflow
     assert result.count("-->") == 2
     assert line1 in result
     assert line2 in result
     assert result.index(line1) < result.index(line2)
+
+
+def test_build_srt_never_leaves_punctuation_at_the_start_of_a_line():
+    # Regression: breaking right after a particle ("は" in "時は") that is
+    # immediately followed by a "、" in the source text used to strand that
+    # "、" as the first character of the next line. Punctuation must stay
+    # attached to the end of the line it follows.
+    text = "ですから、夢を記録する時は、目覚めてすぐ、起き上がる前にメモすることが大切です。"
+    segments = [{"start": 0.0, "end": 8.32, "speaker": None, "text": text}]
+
+    result = build_srt(segments, {})
+
+    for line in result.split("\n"):
+        if not line or "-->" in line or line.isdigit():
+            continue
+        assert line[0] not in "。、！？", f"line starts with punctuation: {line!r}"
 
 
 def test_build_srt_wrap_counts_speaker_prefix_toward_the_limit():
