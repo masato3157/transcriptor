@@ -143,6 +143,48 @@ def test_build_srt_never_leaves_punctuation_at_the_start_of_a_line():
         assert line[0] not in "。、！？", f"line starts with punctuation: {line!r}"
 
 
+def test_build_srt_never_leaves_punctuation_at_the_start_of_a_segment():
+    # Regression: Whisper sometimes splits its OWN segments such that a
+    # comma/period lands at the very start of the next segment's raw text
+    # (before any line-wrapping happens), rather than at the end of the
+    # previous segment. This is a different case from the within-one-wrap
+    # bug above: here segment 2's own text begins with "、".
+    segments = [
+        {"start": 19.610, "end": 22.106, "speaker": None, "text": "ですから、夢を記録する時は"},
+        {
+            "start": 22.106,
+            "end": 27.290,
+            "speaker": None,
+            "text": "、目覚めてすぐ、起き上がる前にメモすることが大切です。",
+        },
+    ]
+
+    result = build_srt(segments, {})
+
+    for line in result.split("\n"):
+        if not line or "-->" in line or line.isdigit():
+            continue
+        assert line[0] not in "。、！？", f"line starts with punctuation: {line!r}"
+    # The leading "、" should have been reattached to the end of segment 1's text.
+    assert "ですから、夢を記録する時は、" in result
+
+
+def test_build_srt_drops_a_segment_that_is_only_punctuation():
+    # Whisper occasionally emits a whole segment whose text is a single
+    # punctuation mark (e.g. a lone "。" a fraction of a second long). Once
+    # that mark is pulled onto the previous segment, the now-empty segment
+    # should disappear entirely rather than produce a blank cue, and the
+    # previous cue's end time should extend to cover the dropped segment.
+    segments = [
+        {"start": 0.0, "end": 1.92, "speaker": None, "text": "覚えていたのでしょうか"},
+        {"start": 1.92, "end": 2.19, "speaker": None, "text": "。"},
+    ]
+
+    result = build_srt(segments, {})
+
+    assert result == "1\n00:00:00,000 --> 00:00:02,190\n覚えていたのでしょうか。\n"
+
+
 def test_build_srt_wrap_counts_speaker_prefix_toward_the_limit():
     # prefix "田中: " (4 chars) counts toward the first line's budget, so
     # fewer body tokens fit before the same token-boundary wrap kicks in.

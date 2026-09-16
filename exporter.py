@@ -101,6 +101,39 @@ def _pull_leading_punctuation_to_previous_line(lines):
     return result
 
 
+def _pull_leading_punctuation_across_segments(segments):
+    """Move a segment's leading punctuation mark(s) onto the end of the
+    previous segment's text.
+
+    Whisper's own segmentation sometimes places a stray comma or period at
+    the very start of a new segment instead of the end of the previous one
+    (e.g. segment 1 ends "...時は" and segment 2 begins "、目覚めて...").
+    This runs before any line-wrapping, since the within-segment wrap fix
+    (_pull_leading_punctuation_to_previous_line) only reorders lines
+    produced from a single segment's own text and can't reach back into a
+    different segment.
+
+    If a segment's text becomes empty after its leading punctuation is
+    removed (a segment that was nothing but a punctuation mark), that
+    segment is dropped and the previous segment's end time is extended to
+    cover it, so no time range is lost.
+    """
+    result = [dict(seg) for seg in segments]
+    i = 1
+    while i < len(result):
+        text = result[i]["text"]
+        if text and text[0] in _SRT_PUNCTUATION:
+            result[i - 1]["text"] += text[0]
+            result[i]["text"] = text[1:]
+            if result[i]["text"] == "":
+                result[i - 1]["end"] = result[i]["end"]
+                del result[i]
+                continue
+        else:
+            i += 1
+    return result
+
+
 def _split_segment_into_srt_cues(prefix, text, start, end):
     """Split one merged segment into (start, end, line) SRT cues.
 
@@ -144,6 +177,7 @@ def build_srt(segments, speaker_names):
     _split_segment_into_srt_cues); cue numbers are sequential across the
     whole file, not reset per segment.
     """
+    segments = _pull_leading_punctuation_across_segments(segments)
     blocks = []
     index = 1
     for seg in segments:
