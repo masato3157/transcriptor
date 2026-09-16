@@ -1,6 +1,10 @@
 """Build and write transcript output files in TXT, SRT, and VTT formats."""
 from pathlib import Path
 
+from janome.tokenizer import Tokenizer
+
+_tokenizer = Tokenizer()
+
 
 def format_timestamp_txt(seconds: float) -> str:
     """Format seconds as HH:MM:SS for bracketed TXT timestamps."""
@@ -37,13 +41,65 @@ def _speaker_prefix(segment, speaker_names):
 
 
 SRT_LINE_WIDTH = 25
+SRT_MIN_BREAK_LENGTH = 8
 
 
-def _wrap_srt_text(text, width=SRT_LINE_WIDTH):
-    """Split text into lines of at most `width` characters each."""
+def _wrap_srt_text(text, width=SRT_LINE_WIDTH, min_break_length=SRT_MIN_BREAK_LENGTH):
+    """Split text into lines of at most `width` characters, breaking at
+    word boundaries (never mid-word) and preferring to break right after a
+    particle (助詞) once a line has reached `min_break_length` characters,
+    for more natural-reading line breaks than packing to the width limit.
+    """
     if not text:
         return [""]
-    return [text[i : i + width] for i in range(0, len(text), width)]
+
+    lines = []
+    current = ""
+    for token in _tokenizer.tokenize(text):
+        surface = token.surface
+        part_of_speech = token.part_of_speech.split(",")[0]
+
+        if len(current) + len(surface) > width:
+            if current:
+                lines.append(current)
+                current = ""
+            if len(surface) > width:
+                # No word boundary available within this single token.
+                for i in range(0, len(surface), width):
+                    lines.append(surface[i : i + width])
+                continue
+
+        current += surface
+        if part_of_speech == "助詞" and len(current) >= min_break_length:
+            lines.append(current)
+            current = ""
+
+    if current:
+        lines.append(current)
+    return lines or [""]
+
+
+def _split_segment_into_srt_cues(prefix, text, start, end):
+    """Split one merged segment into (start, end, line) SRT cues.
+
+    Each line from _wrap_srt_text becomes its own cue. The segment's time
+    range is divided across the cues proportionally to each line's
+    character count, so longer lines get proportionally more display time.
+    """
+    lines = _wrap_srt_text(f"{prefix}{text}")
+    total_chars = sum(len(line) for line in lines) or 1
+    duration = end - start
+    cues = []
+    cursor = start
+    last_index = len(lines) - 1
+    for i, line in enumerate(lines):
+        if i == last_index:
+            cue_end = end
+        else:
+            cue_end = cursor + duration * (len(line) / total_chars)
+        cues.append((cursor, cue_end, line))
+        cursor = cue_end
+    return cues
 
 
 def build_txt(segments, speaker_names, include_timestamps):
@@ -60,14 +116,22 @@ def build_txt(segments, speaker_names, include_timestamps):
 
 
 def build_srt(segments, speaker_names):
-    """Build SRT content from merged segments."""
+    """Build SRT content from merged segments.
+
+    Each segment may produce multiple cues (one per wrapped line, see
+    _split_segment_into_srt_cues); cue numbers are sequential across the
+    whole file, not reset per segment.
+    """
     blocks = []
-    for i, seg in enumerate(segments, start=1):
+    index = 1
+    for seg in segments:
         prefix = _speaker_prefix(seg, speaker_names)
-        start_ts = format_timestamp_srt(seg["start"])
-        end_ts = format_timestamp_srt(seg["end"])
-        cue_text = "\n".join(_wrap_srt_text(f"{prefix}{seg['text']}"))
-        blocks.append(f"{i}\n{start_ts} --> {end_ts}\n{cue_text}\n")
+        cues = _split_segment_into_srt_cues(prefix, seg["text"], seg["start"], seg["end"])
+        for start, end, line in cues:
+            start_ts = format_timestamp_srt(start)
+            end_ts = format_timestamp_srt(end)
+            blocks.append(f"{index}\n{start_ts} --> {end_ts}\n{line}\n")
+            index += 1
     return "\n".join(blocks)
 
 
