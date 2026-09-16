@@ -16,6 +16,7 @@ import transcriber
 import diarizer
 import merger
 import exporter
+import dictionary
 
 load_dotenv()
 
@@ -55,6 +56,7 @@ class TranscriptionApp(Tk):
         self.geometry("700x550")
 
         self.selected_files = []
+        self.dictionary = dictionary.load_dictionary()
 
         self._build_main_screen()
 
@@ -119,8 +121,13 @@ class TranscriptionApp(Tk):
             variable=self.include_timestamps_var
         ).grid(row=3, column=0, columnspan=3, sticky="w")
 
-        self.run_button = Button(self, text="実行", command=self._on_run_clicked)
-        self.run_button.pack(pady=5)
+        button_frame = Frame(self)
+        button_frame.pack(pady=5)
+        self.run_button = Button(button_frame, text="実行", command=self._on_run_clicked)
+        self.run_button.pack(side="left", padx=5)
+        Button(button_frame, text="辞書を編集", command=self._open_dictionary_editor).pack(
+            side="left", padx=5
+        )
 
         self.log_text = Text(self, height=15, state=DISABLED)
         self.log_text.pack(fill="both", expand=True, padx=10, pady=5)
@@ -145,6 +152,77 @@ class TranscriptionApp(Tk):
         folder = filedialog.askdirectory()
         if folder:
             self.output_folder_var.set(folder)
+
+    def _open_dictionary_editor(self):
+        window = Toplevel(self)
+        window.title("辞書を編集")
+        window.geometry("450x400")
+
+        Label(
+            window,
+            text="文字起こし結果の誤認識を自動修正します(例: おおたかゆうこ → 大高ゆうこ)。",
+            wraplength=420,
+            justify="left",
+        ).pack(fill="x", padx=10, pady=5)
+
+        listbox = Listbox(window, height=12)
+        listbox.pack(fill="both", expand=True, padx=10, pady=5)
+
+        def refresh_listbox():
+            listbox.delete(0, END)
+            for original, replacement in self.dictionary.items():
+                listbox.insert(END, f"{original} → {replacement}")
+
+        refresh_listbox()
+
+        entry_frame = Frame(window)
+        entry_frame.pack(fill="x", padx=10, pady=5)
+        Label(entry_frame, text="認識結果:").grid(row=0, column=0, sticky="w")
+        original_var = StringVar(value="")
+        Entry(entry_frame, textvariable=original_var).grid(row=0, column=1, sticky="we", padx=5)
+        Label(entry_frame, text="正しい表記:").grid(row=1, column=0, sticky="w")
+        replacement_var = StringVar(value="")
+        Entry(entry_frame, textvariable=replacement_var).grid(row=1, column=1, sticky="we", padx=5)
+        entry_frame.columnconfigure(1, weight=1)
+
+        def on_select(_event):
+            selection = listbox.curselection()
+            if not selection:
+                return
+            key = list(self.dictionary.keys())[selection[0]]
+            original_var.set(key)
+            replacement_var.set(self.dictionary[key])
+
+        listbox.bind("<<ListboxSelect>>", on_select)
+
+        def on_add_or_update():
+            original = original_var.get().strip()
+            replacement = replacement_var.get().strip()
+            if not original or not replacement:
+                messagebox.showwarning("入力エラー", "認識結果と正しい表記の両方を入力してください。")
+                return
+            self.dictionary[original] = replacement
+            dictionary.save_dictionary(self.dictionary)
+            refresh_listbox()
+            original_var.set("")
+            replacement_var.set("")
+
+        def on_delete():
+            selection = listbox.curselection()
+            if not selection:
+                messagebox.showwarning("未選択", "削除する項目を選択してください。")
+                return
+            key = list(self.dictionary.keys())[selection[0]]
+            del self.dictionary[key]
+            dictionary.save_dictionary(self.dictionary)
+            refresh_listbox()
+            original_var.set("")
+            replacement_var.set("")
+
+        action_frame = Frame(window)
+        action_frame.pack(fill="x", padx=10, pady=5)
+        Button(action_frame, text="追加・更新", command=on_add_or_update).pack(side="left", padx=5)
+        Button(action_frame, text="選択した項目を削除", command=on_delete).pack(side="left", padx=5)
 
     def log(self, message):
         def _append():
@@ -216,6 +294,10 @@ class TranscriptionApp(Tk):
                 language=settings["language"],
                 device=settings["device"],
             )
+            transcript_segments = [
+                {**seg, "text": dictionary.apply_replacements(seg["text"], self.dictionary)}
+                for seg in transcript_segments
+            ]
 
             speaker_segments = None
             if settings["diarization_enabled"]:
