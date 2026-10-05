@@ -41,64 +41,245 @@ def _speaker_prefix(segment, speaker_names):
 
 
 SRT_LINE_WIDTH = 25
-SRT_MIN_BREAK_LENGTH = 20
-
-
-def _wrap_srt_text(text, width=SRT_LINE_WIDTH, min_break_length=SRT_MIN_BREAK_LENGTH):
-    """Split text into lines of at most `width` characters, breaking at
-    word boundaries (never mid-word) and preferring to break right after a
-    particle (助詞) once a line has reached `min_break_length` characters,
-    for more natural-reading line breaks than packing to the width limit.
-    """
-    if not text:
-        return [""]
-
-    lines = []
-    current = ""
-    for token in _tokenizer.tokenize(text):
-        surface = token.surface
-        part_of_speech = token.part_of_speech.split(",")[0]
-
-        if len(current) + len(surface) > width:
-            if current:
-                lines.append(current)
-                current = ""
-            if len(surface) > width:
-                # No word boundary available within this single token.
-                for i in range(0, len(surface), width):
-                    lines.append(surface[i : i + width])
-                continue
-
-        current += surface
-        if part_of_speech == "助詞" and len(current) >= min_break_length:
-            lines.append(current)
-            current = ""
-
-    if current:
-        lines.append(current)
-    return _pull_leading_punctuation_to_previous_line(lines) or [""]
-
 
 _SRT_PUNCTUATION = "。、！？"
+_SENTENCE_END_MARKS = "。！？!?"
+_CLOSING_SYMBOLS = "」』）)】"
+_COMMA_MARKS = "、,，"
+
+# Costs (lower is better) for choosing where to split a sentence that is too
+# long for one line; see _boundary_penalty and _balanced_lines.
+_LINE_COUNT_PENALTY = 0.15
+_OVERFLOW_PENALTY = 10.0
+_MID_WORD_PENALTY = 2.0
+_SHORT_LINE_LENGTH = 6  # avoid orphan lines such as a lone "分野です"
+_SHORT_LINE_PENALTY = 0.6
 
 
-def _pull_leading_punctuation_to_previous_line(lines):
-    """Move a line's leading punctuation mark(s) to the end of the previous
-    line, so no line ever starts with punctuation (e.g. avoids a line like
-    "、目覚めてすぐ" left over from a break right after a particle that was
-    immediately followed by a "、" in the source text).
+def _pos(token):
+    parts = token.part_of_speech.split(",")
+    return parts[0], parts[1] if len(parts) > 1 else ""
+
+
+def _is_dependent(token, previous):
+    """True for tokens that attach to the word before them (particles,
+    auxiliary verbs, suffixes, formal nouns such as こと, punctuation), and
+    so never begin a new phrase (文節).
     """
-    result = list(lines)
-    i = 1
-    while i < len(result):
-        if result[i] and result[i][0] in _SRT_PUNCTUATION:
-            result[i - 1] += result[i][0]
-            result[i] = result[i][1:]
-            if result[i] == "":
-                del result[i]
+    pos1, pos2 = _pos(token)
+    if pos1 in ("助詞", "助動詞", "記号"):
+        return True
+    if pos1 in ("名詞", "動詞", "形容詞") and pos2 in ("接尾", "非自立"):
+        return True
+    # The 万 of 10万: a number continuing a number.
+    return pos1 == "名詞" and pos2 == "数" and previous is not None and _pos(previous)[1] == "数"
+
+
+def _starts_new_clause(token):
+    return not token.surface.isspace() and not _is_dependent(token, None)
+
+
+def _consists_of(surface, characters):
+    return bool(surface) and all(char in characters for char in surface)
+
+
+def _space_joins_words(previous, following):
+    """A space between two ASCII alphanumerics ("iPhone 15") is part of the
+    text; any other space is a sentence separator that Whisper emits where
+    it leaves out 。.
+    """
+    if previous is None or following is None:
+        return False
+    before, after = previous.surface[-1], following.surface[0]
+    return before.isascii() and before.isalnum() and after.isascii() and after.isalnum()
+
+
+def _ends_sentence_without_punctuation(token, previous, following):
+    """Detect a sentence end where Whisper left out 。: a sentence-final
+    particle (ね, よ ...) or a polite ending (です, ます, ました, でした,
+    ません) directly followed by a word that starts a new clause.
+    """
+    if following is None or not _starts_new_clause(following):
+        return False
+    pos1, pos2 = _pos(token)
+    if pos1 == "助詞":
+        return pos2 == "終助詞"
+    if pos1 == "動詞":
+        return token.surface == "ください"
+    if pos1 != "助動詞":
+        return False
+    previous_surface = previous.surface if previous is not None else ""
+    return (
+        token.surface in ("です", "ます")
+        or (token.surface == "た" and previous_surface in ("まし", "でし"))
+        or (token.surface == "ん" and previous_surface == "ませ")
+        or (token.surface == "う" and previous_surface in ("ましょ", "でしょ"))
+    )
+
+
+def _split_into_sentences(tokens):
+    """Group tokens into sentences, ending one at 。！？, at a space, or at a
+    punctuation-less sentence end. Separator spaces are dropped.
+    """
+    sentences = []
+    current = []
+    i = 0
+    while i < len(tokens):
+        token = tokens[i]
+        previous = tokens[i - 1] if i > 0 else None
+        following = tokens[i + 1] if i + 1 < len(tokens) else None
+
+        if token.surface.isspace():
+            if _space_joins_words(previous, following):
+                current.append(token)
+            elif current:
+                sentences.append(current)
+                current = []
         else:
-            i += 1
-    return result
+            current.append(token)
+            if _consists_of(token.surface, _SENTENCE_END_MARKS):
+                while i + 1 < len(tokens) and _consists_of(
+                    tokens[i + 1].surface, _SENTENCE_END_MARKS + _CLOSING_SYMBOLS
+                ):
+                    i += 1
+                    current.append(tokens[i])
+                sentences.append(current)
+                current = []
+            elif _ends_sentence_without_punctuation(token, previous, following):
+                sentences.append(current)
+                current = []
+        i += 1
+    if current:
+        sentences.append(current)
+    return sentences
+
+
+def _group_into_phrases(tokens):
+    """Group a sentence's tokens into phrases (文節-like units): an
+    independent word plus the particles/auxiliaries/suffixes that follow it,
+    with a prefix (お, ご) kept together with the word it precedes.
+    """
+    phrases = []
+    for i, token in enumerate(tokens):
+        previous = tokens[i - 1] if i > 0 else None
+        # A phrase never continues past a comma, even if the next word is
+        # tagged as a suffix (Janome does that to the 後 of "、後から").
+        continues = phrases and previous.surface not in _COMMA_MARKS
+        if continues and (_is_dependent(token, previous) or _pos(previous)[0] == "接頭詞"):
+            phrases[-1].append(token)
+        else:
+            phrases.append([token])
+    return phrases
+
+
+def _boundary_penalty(last, following):
+    """How undesirable it is to start a new line right after a phrase whose
+    last token is `last`, before the phrase that begins with `following`.
+    """
+    pos1, pos2 = _pos(last)
+    following_pos1 = _pos(following)[0]
+    if last.surface in _COMMA_MARKS:
+        return 0.0
+    if pos1 == "助詞":
+        if pos2 == "接続助詞":
+            return 0.0
+        if last.surface == "の" or pos2 in ("連体化", "並立助詞"):
+            return 1.0  # modifies or joins the word that follows
+        penalty = 0.5 if pos2 == "係助詞" else 0.2  # topic marker: keep with predicate
+        if following_pos1 == "動詞":
+            penalty += 0.6  # an argument cut off from its own verb
+        return penalty
+    if pos1 in ("副詞", "連体詞", "接続詞", "接頭詞"):
+        return 1.0  # leans on the word that follows
+    penalty = 0.4
+    if pos1 == "名詞" and following_pos1 == "名詞":
+        penalty += 0.5  # probably a compound noun
+    if pos1 in ("動詞", "形容詞", "助動詞") and following_pos1 == "名詞":
+        penalty += 0.3  # a modifier clause cut off from the noun it modifies
+    return penalty
+
+
+def _phrase_records(phrases, width):
+    """(text, penalty for breaking after it) per phrase. A phrase longer than
+    `width` has no natural break inside, so it is cut into even pieces.
+    """
+    records = []
+    for index, phrase in enumerate(phrases):
+        text = "".join(token.surface for token in phrase)
+        following = phrases[index + 1][0] if index + 1 < len(phrases) else None
+        penalty = _boundary_penalty(phrase[-1], following) if following is not None else 0.0
+        if len(text) <= width:
+            records.append((text, penalty))
+            continue
+        pieces = -(-len(text) // width)
+        size = -(-len(text) // pieces)
+        chunks = [text[i : i + size] for i in range(0, len(text), size)]
+        records.extend((chunk, _MID_WORD_PENALTY) for chunk in chunks[:-1])
+        records.append((chunks[-1], penalty))
+    return records
+
+
+def _balanced_lines(records, width):
+    """Split phrase records into lines of at most `width` characters, at the
+    breaks that best balance the line lengths, avoid unnatural break points
+    (_boundary_penalty) and keep the number of lines low.
+    """
+    count = len(records)
+    best = [float("inf")] * (count + 1)
+    break_before = [0] * (count + 1)
+    best[0] = 0.0
+    for end in range(1, count + 1):
+        length = 0
+        for start in range(end - 1, -1, -1):
+            length += len(records[start][0])
+            if length > width and start != end - 1:
+                break
+            if length <= width:
+                slack = ((width - length) / width) ** 2
+            else:
+                slack = _OVERFLOW_PENALTY + (length - width)
+            cost = best[start] + slack + _LINE_COUNT_PENALTY
+            if length < _SHORT_LINE_LENGTH:
+                cost += _SHORT_LINE_PENALTY
+            if end < count:
+                cost += records[end - 1][1]
+            if cost < best[end]:
+                best[end] = cost
+                break_before[end] = start
+
+    lines = []
+    end = count
+    while end > 0:
+        start = break_before[end]
+        lines.append("".join(text for text, _ in records[start:end]))
+        end = start
+    lines.reverse()
+    return lines
+
+
+def _wrap_srt_text(text, width=SRT_LINE_WIDTH, prefix=""):
+    """Split `text` into SRT lines of at most `width` characters.
+
+    A sentence end always ends a line, so a line never carries the start of
+    the next sentence. A sentence that fits on one line stays whole; a longer
+    one is split between phrases (never inside one), balancing the lengths
+    and preferring natural break points. `prefix` (the speaker label) is
+    glued to the start of the first sentence and counts toward its width.
+    """
+    sentences = _split_into_sentences(list(_tokenizer.tokenize(text)))
+    if not sentences:
+        return [prefix] if prefix else [""]
+
+    lines = []
+    for index, sentence in enumerate(sentences):
+        records = _phrase_records(_group_into_phrases(sentence), width)
+        if index == 0 and prefix:
+            records[0] = (prefix + records[0][0], records[0][1])
+        if sum(len(record_text) for record_text, _ in records) <= width:
+            lines.append("".join(record_text for record_text, _ in records))
+        else:
+            lines.extend(_balanced_lines(records, width))
+    return lines
 
 
 def _pull_leading_punctuation_across_segments(segments):
@@ -141,7 +322,7 @@ def _split_segment_into_srt_cues(prefix, text, start, end):
     range is divided across the cues proportionally to each line's
     character count, so longer lines get proportionally more display time.
     """
-    lines = _wrap_srt_text(f"{prefix}{text}")
+    lines = _wrap_srt_text(text, prefix=prefix)
     total_chars = sum(len(line) for line in lines) or 1
     duration = end - start
     cues = []
